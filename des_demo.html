@@ -112,6 +112,10 @@ button.primary{background:linear-gradient(135deg,var(--accent2),var(--accent));c
 .kt td{padding:3px 8px;border-top:1px solid var(--line)}
 .kt tr:hover td{background:var(--card2)}
 .kt .sh{color:var(--accent2)}
+.bit.diff{background:var(--bad);color:#fff;border-radius:3px}
+.dt tr.inj td{border-top:2px solid var(--warm);border-bottom:2px solid var(--warm)}
+.dt tr.inj td:first-child{color:var(--warm);font-weight:700}
+.dt .bits{gap:0 6px}
 .kt td{white-space:nowrap}
 .kt .bits{flex-wrap:nowrap;gap:0 5px}
 .kt .bit{font-size:.74rem;width:.62em}
@@ -281,13 +285,14 @@ function keySchedule(keyBits) {
 }
 
 // Full trace of one block through DES. decrypt = same machine, subkeys reversed.
-function run(blockBits, keyBits, decrypt) {
+function run(blockBits, keyBits, decrypt, inj) {
   const ks = keySchedule(keyBits);
   const order = decrypt ? ks.rows.slice().reverse() : ks.rows;
   const ip = permute(blockBits, T.IP);
   let L = ip.slice(0, 32), R = ip.slice(32);
   const rounds = [];
   order.forEach((row, i) => {
+    if (inj && inj.round === i + 1) { if (inj.bit < 32) L = L.map((v, j) => j === inj.bit ? v ^ 1 : v); else R = R.map((v, j) => j === inj.bit - 32 ? v ^ 1 : v); }
     const exp = permute(R, T.E);
     const x = xor(exp, row.k);
     const sb = []; let sOut = [];
@@ -314,7 +319,7 @@ function run(blockBits, keyBits, decrypt) {
 const $ = s => document.querySelector(s);
 const TABS = ['Input', 'Initial Permutation', 'Key Schedule', '16 Rounds', 'Output', 'Avalanche'];
 const SUBS = ['Split', 'Expand', 'Mix key', 'S-boxes', 'P-box', 'XOR & swap'];
-const S = { tab: 0, round: 1, sub: 0, sb: 0, play: null, mode: 'enc', av: { t: 'pt', bit: 0 }, tr: null, err: '' };
+const S = { tab: 0, round: 1, sub: 0, sb: 0, play: null, mode: 'enc', av: { t: 'pt', bit: 0, r: 0 }, tr: null, err: '' };
 
 /* ---- input parsing ---- */
 function parse(str, what) {
@@ -495,33 +500,60 @@ function vOutput() {
 }
 
 function vAv() {
-  const t = tr(), a = S.av;
-  const bBits = a.t === 'pt' ? S.p.bits.slice() : S.k.bits.slice();
-  bBits[a.bit] ^= 1;
-  const t2 = a.t === 'pt' ? run(bBits, S.k.bits, S.mode === 'dec') : run(S.p.bits, bBits, S.mode === 'dec');
+  const t = tr(), a = S.av, dec = S.mode === 'dec';
+  const k = a.t === 'pt' ? a.r : 0;              // 0 = flip before IP / in the key
+  let src;
+  if (a.t === 'key') src = S.k.bits;
+  else if (k === 0) src = S.p.bits;
+  else { const r0 = t.rounds[k - 1]; src = r0.L.concat(r0.R); }
+  const fl = src.slice(); fl[a.bit] ^= 1;
+  let t2;
+  if (a.t === 'key') t2 = run(S.p.bits, fl, dec);
+  else if (k === 0) t2 = run(fl, S.k.bits, dec);
+  else t2 = run(S.p.bits, S.k.bits, dec, { round: k, bit: a.bit });
   const diff = (x, y) => x.reduce((n, v, i) => n + (v !== y[i] ? 1 : 0), 0);
-  const series = [diff(t.ip, t2.ip), ...t.rounds.map((r, i) => diff(r.newL.concat(r.newR), t2.rounds[i].newL.concat(t2.rounds[i].newR)))];
+  const st = r => r.newL.concat(r.newR);
+  const series = [diff(t.ip, t2.ip), ...t.rounds.map((r, i) => diff(st(r), st(t2.rounds[i])))];
   const total = diff(t.out, t2.out);
   const parity = a.t === 'key' && (a.bit + 1) % 8 === 0;
-  const src = a.t === 'pt' ? S.p.bits : S.k.bits;
-  return `<h2>6 · The avalanche effect</h2>
-  <p class="say">Flip <b>one single bit</b> of the ${a.t === 'pt' ? 'input' : 'key'} and watch the difference explode through the rounds. Good ciphers change ≈ half the output bits.</p>
-  <div class="cols">
-    <div class="panel">
-      <div class="seg" style="margin-bottom:10px;max-width:260px"><button data-avt="pt" class="${a.t === 'pt' ? 'on' : ''}">Flip input bit</button><button data-avt="key" class="${a.t === 'key' ? 'on' : ''}">Flip key bit</button></div>
-      ${grid(src, { hue: () => 230, lab: i => i + 1, cls: i => i === a.bit ? 'flip' : (a.t === 'key' && (i + 1) % 8 === 0 ? 'sel' : ''), attr: i => `data-bit="${i}"` })}
-      <p style="color:var(--muted);font-size:.85rem;margin:8px 0 0">Click any bit to flip it. ${a.t === 'key' ? 'Outlined = parity bits.' : ''}</p>
+  const where = a.t === 'key' ? 'key bit ' + (a.bit + 1) + ' (used from round 1)'
+              : k === 0 ? 'input bit ' + (a.bit + 1) + ' (before IP)'
+              : 'bit ' + (a.bit + 1) + ' of the state entering round ' + k;
+  const firstSeen = series.findIndex((v, i) => i > 0 && v > 0);
+  const row = (label, o, m, cls) => `<tr class="${cls || ''}"><td>${label}</td><td>${bits(o, 4)}</td><td>${
+    `<span class="bits">${m.map((v, j) => (j % 4 === 0 ? '<span class="grp">' : '') + bit(v, v !== o[j] ? 'diff' : '') + (j % 4 === 3 ? '</span>' : '')).join('')}</span>`}</td><td>${diff(o, m)}</td></tr>`;
+  const rows = [row('Input', t.block, t2.block, ''), row('After IP', t.ip, t2.ip, '')];
+  t.rounds.forEach((r, i) => {
+    if (a.t === 'pt' && k === r.n) rows.push(row('⚡ flip', src, fl, 'inj'));
+    rows.push(row('Round ' + r.n, st(r), st(t2.rounds[i]), ''));
+  });
+  const tbl = rows.join('');
+  return `<h2>6 · Avalanche: change a bit anywhere, watch it spread</h2>
+  <p class="say">Pick <b>where</b> to flip one bit — before round 1, or at the start of any round — and see exactly which bits differ from that point on. Change: <b>${where}</b>.</p>
+  <div class="panel" style="margin-bottom:14px">
+    <h3>Inject the flip at</h3>
+    <div class="chips" style="margin:0 0 10px">
+      <button class="chip ${a.t === 'pt' && k === 0 ? 'on' : ''}" style="width:auto;padding:0 12px" data-avr="0">Input</button>
+      ${[...Array(16).keys()].map(i => `<button class="chip ${a.t === 'pt' && k === i + 1 ? 'on' : ''}" data-avr="${i + 1}" title="flip before round ${i + 1}">${i + 1}</button>`).join('')}
+      <button class="chip ${a.t === 'key' ? 'on' : ''}" style="width:auto;padding:0 12px" data-avt="key">Key bit</button>
     </div>
-    <div class="panel">
-      <h3>Bits different (out of 64) after each round</h3>
-      <div class="chart"><div class="half" style="bottom:${32 / 64 * 100}%"><span>32 = ideal</span></div>
-        ${series.map(v => `<div class="bar"><span>${v}</span><div style="height:${v / 64 * 100}%"></div></div>`).join('')}</div>
-      <div class="xl">${['IP', ...t.rounds.map(r => r.n)].map(x => `<span>${x}</span>`).join('')}</div>
-      <div class="line" style="margin-top:12px"><span class="lbl">Original</span>${hex(t.out)}</div>
-      <div class="line"><span class="lbl">Flipped</span>${hex(t2.out)}</div>
-      <div class="line"><span class="lbl">Result</span><span class="badge ${total > 20 ? 'ok' : 'no'}">${total} of 64 output bits changed</span></div>
-      ${parity ? '<div class="note"><b>Parity bit!</b> DES ignores every 8th key bit, so flipping it changes nothing.</div>' : ''}
+    <div class="cols">
+      <div>${grid(src, { hue: () => 230, lab: i => i + 1, cls: i => i === a.bit ? 'flip' : (a.t === 'key' && (i + 1) % 8 === 0 ? 'sel' : ''), attr: i => `data-bit="${i}"` })}
+        <p style="color:var(--muted);font-size:.85rem;margin:8px 0 0">${a.t === 'key' ? 'Key bits (outlined = parity).' : k === 0 ? 'Input block.' : `State L‖R entering round ${k}.`} Click a bit to flip it.</p></div>
+      <div>
+        <h3 style="margin:0 0 6px;font-size:.8rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted)">Bits different (of 64) after each round</h3>
+        <div class="chart"><div class="half" style="bottom:50%"><span>32 = ideal</span></div>
+          ${series.map(v => `<div class="bar"><span>${v}</span><div style="height:${v / 64 * 100}%"></div></div>`).join('')}</div>
+        <div class="xl">${['IP', ...t.rounds.map(r => r.n)].map(x => `<span>${x}</span>`).join('')}</div>
+      </div>
     </div>
+    <div class="line" style="margin-top:10px"><span class="lbl">Original</span>${hex(t.out)}<span class="lbl" style="margin-left:14px">Modified</span>${hex(t2.out)}
+      <span class="badge ${total > 20 ? 'ok' : 'no'}">${total} of 64 output bits changed</span></div>
+    ${firstSeen > 0 ? `<div class="note">First visible difference: <b>${a.t === 'pt' && k > 1 ? 'round ' + k + ' (where it was injected) — rounds 1–' + (k - 1) + ' are identical' : 'already in round ' + firstSeen}</b>. By the last round about half the bits differ.</div>` : ''}
+    ${parity ? '<div class="note"><b>Parity bit!</b> DES ignores every 8th key bit, so flipping it changes nothing.</div>' : ''}
+  </div>
+  <div class="panel"><h3>Round-by-round state L‖R — <span style="color:var(--bad)">red</span> = bit differs from the original</h3>
+    <div class="scroll"><table class="kt dt"><thead><tr><th>Stage</th><th>Original (64 bits)</th><th>Modified (64 bits)</th><th>Δ bits</th></tr></thead><tbody>${tbl}</tbody></table></div>
   </div>`;
 }
 
@@ -591,6 +623,7 @@ $('#stage').onclick = e => {
   const c = e.target.closest('[data-round]'); if (c) { S.round = +c.dataset.round; S.sub = 5; return render(); }
   const sb = e.target.closest('[data-sb]'); if (sb) { S.sb = +sb.dataset.sb; return render(); }
   const bt = e.target.closest('[data-bit]'); if (bt) { S.av.bit = +bt.dataset.bit; return render(); }
+  const ar = e.target.closest('[data-avr]'); if (ar) { S.av.t = 'pt'; S.av.r = +ar.dataset.avr; S.av.bit = 0; return render(); }
   const at = e.target.closest('[data-avt]'); if (at) { S.av.t = at.dataset.avt; S.av.bit = 0; return render(); }
 };
 document.addEventListener('keydown', e => {

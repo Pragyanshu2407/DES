@@ -18,7 +18,7 @@
 3. **Key schedule** – one key -> sixteen 48-bit round keys via PC-1, rotations, PC-2.
 4. **Rounds** – the heart: `L <- R`, `R <- L xor f(R, K)`. Use *Next* to reveal Expand -> xor key -> S-boxes -> P-box -> xor & swap. Click an S-box to show its table lookup (outer bits = row, inner 4 = column).
 5. **Output** – swap + inverse permutation = ciphertext. Decrypt = same circuit, keys reversed (green "round-trip verified" badge, or press *Decrypt*).
-6. **Avalanche** – flip one bit, ~32/64 output bits change. Flip a parity key bit to show *nothing* changes.
+6. **Avalanche** – choose *where* to flip one bit: the input, the state entering any round 1–16, or a key bit. The chart and the round-by-round table (changed bits in red) show rounds before the flip are identical and the difference spreads to ~32/64 bits. Flip a parity key bit to show *nothing* changes.
 
 ## Closing points
 - 56-bit key -> brute-forced (EFF Deep Crack, 1998, < 3 days).
